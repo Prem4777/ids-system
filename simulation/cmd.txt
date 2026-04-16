@@ -1,0 +1,11 @@
+.\run_scenario.ps1 -TargetIp 10.158.96.49
+
+# Full multi-attack demo flow:
+.\run_multi_attack.ps1 -TargetIp 10.158.96.49
+
+# Individual attack modes:
+python scan_traffic.py --target 10.158.96.49 --ports "20-120,443,5000,8000" --rounds 3 --delay-ms 6
+python slow_traffic.py --target 10.158.96.49 --duration 180 --interval 0.12
+python burst_traffic.py --target 10.158.96.49 --rounds 3 --burst-seconds 20 --request-rate 150 --jitter-ms 5
+
+http://10.158.96.49:8000/health

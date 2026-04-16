@@ -1,0 +1,36 @@
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs
+*.log
+
+# Dataset files (kept local, not pushed)
+*.csv
+
+# Model artifacts (kept local, not pushed)
+models/**
+!models/
+!models/.gitkeep
+!models/MODEL_LAYOUT.md
+!models/ton_iot/
+!models/ton_iot/.gitkeep

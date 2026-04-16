@@ -1,0 +1,5 @@
+﻿streamlit==1.55.0
+requests==2.33.1
+pandas==2.3.3
+plotly==6.6.0
+altair==5.5.0
