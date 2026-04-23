@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import time
 from datetime import datetime
 
@@ -9,22 +10,91 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-API_BASE_URL = os.getenv("IDS_API_BASE_URL", "http://127.0.0.1:8000")
+DEFAULT_API_BASE_URL = os.getenv("IDS_API_BASE_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="TON-IoT IDS Dashboard", layout="wide")
 st.title("TON-IoT IDS Monitoring Dashboard")
-st.caption(f"Backend API: {API_BASE_URL}")
 
 
-def api_get(path: str) -> dict:
-    response = requests.get(f"{API_BASE_URL}{path}", timeout=20)
+def api_get(base_url: str, path: str) -> dict:
+    response = requests.get(f"{base_url}{path}", timeout=20)
     response.raise_for_status()
     return response.json()
 
 
+def discover_candidate_urls(current_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(url: str) -> None:
+        cleaned = url.strip().rstrip("/")
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+
+    add(current_url)
+    add("http://127.0.0.1:8000")
+    add("http://localhost:8000")
+
+    try:
+        host_ips = socket.gethostbyname_ex(socket.gethostname())[2]
+        for ip in host_ips:
+            if ip and not ip.startswith("127."):
+                add(f"http://{ip}:8000")
+    except OSError:
+        pass
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            add(f"http://{sock.getsockname()[0]}:8000")
+    except OSError:
+        pass
+
+    return candidates
+
+
+def probe_health(base_url: str) -> tuple[bool, str]:
+    try:
+        response = requests.get(f"{base_url}/health", timeout=2)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("model_loaded", False):
+            return True, "ok"
+        return True, str(payload.get("status", "reachable"))
+    except requests.RequestException as exc:
+        return False, str(exc)
+
+
 st.sidebar.header("Live Controls")
+if "api_base_url" not in st.session_state:
+    st.session_state["api_base_url"] = DEFAULT_API_BASE_URL
+
+api_base_url = st.sidebar.text_input("Backend API URL", value=st.session_state["api_base_url"]).strip().rstrip("/")
+st.session_state["api_base_url"] = api_base_url
+
+if st.sidebar.button("Auto-detect Live API"):
+    matched_url = None
+    for candidate in discover_candidate_urls(api_base_url):
+        ok, _ = probe_health(candidate)
+        if ok:
+            matched_url = candidate
+            break
+    if matched_url:
+        st.session_state["api_base_url"] = matched_url
+        st.sidebar.success(f"Connected: {matched_url}")
+        st.rerun()
+    else:
+        st.sidebar.error("No reachable backend found on common local/LAN addresses.")
+
+if st.sidebar.button("Test Current API"):
+    ok, detail = probe_health(api_base_url)
+    if ok:
+        st.sidebar.success(f"Reachable: {detail}")
+    else:
+        st.sidebar.error(f"Not reachable: {detail}")
+
 auto_refresh = st.sidebar.toggle("Auto Refresh", value=True)
 refresh_seconds = st.sidebar.slider("Refresh Interval (sec)", min_value=2, max_value=30, value=5, step=1)
+st.caption(f"Backend API: {api_base_url}")
 
 refresh_col1, refresh_col2 = st.columns([1, 3])
 with refresh_col1:
@@ -33,13 +103,17 @@ with refresh_col1:
 with refresh_col2:
     st.caption(f"Read-only live dashboard. Auto refresh every {refresh_seconds}s.")
 
-health = api_get("/health")
-metrics = api_get("/metrics")
-metadata = api_get("/metadata")
-events_payload = api_get("/events?limit=200")
-events = events_payload.get("events", [])
-alert = api_get("/get-alert")
-sensor = api_get("/sensor-data")
+try:
+    health = api_get(api_base_url, "/health")
+    metrics = api_get(api_base_url, "/metrics")
+    metadata = api_get(api_base_url, "/metadata")
+    events_payload = api_get(api_base_url, "/events?limit=200")
+    events = events_payload.get("events", [])
+    alert = api_get(api_base_url, "/get-alert")
+    sensor = api_get(api_base_url, "/sensor-data")
+except requests.RequestException as exc:
+    st.error(f"Cannot reach backend API at {api_base_url}: {exc}")
+    st.stop()
 
 if not health.get("model_loaded", False):
     st.error(f"Model not loaded: {health.get('status')}")

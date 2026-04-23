@@ -1,11 +1,13 @@
-.\run_scenario.ps1 -TargetIp 10.158.96.49
+# Simple DoS (same laptop)
 
-# Full multi-attack demo flow:
-.\run_multi_attack.ps1 -TargetIp 10.158.96.49
+# 1) Activate venv from project root
+(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& ".\.venv\Scripts\Activate.ps1")
 
-# Individual attack modes:
-python scan_traffic.py --target 10.158.96.49 --ports "20-120,443,5000,8000" --rounds 3 --delay-ms 6
-python slow_traffic.py --target 10.158.96.49 --duration 180 --interval 0.12
-python burst_traffic.py --target 10.158.96.49 --rounds 3 --burst-seconds 20 --request-rate 150 --jitter-ms 5
+# 2) Start Phase 2 stack (backend + dashboard + profiler)
+cmd /c .\scripts\start_phase2.bat
 
-http://10.158.96.49:8000/health
+# 3) Run one simple DoS burst from project root
+.\.venv\Scripts\python.exe .\simulation\burst_traffic.py --target 127.0.0.1 --port 8000 --rounds 1 --burst-seconds 10 --cooldown-seconds 1 --workers 25 --request-rate 120 --jitter-ms 3
+
+# 4) Verify detection quickly
+Invoke-RestMethod http://127.0.0.1:8000/events?limit=6 | ConvertTo-Json -Depth 6

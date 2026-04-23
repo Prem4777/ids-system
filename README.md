@@ -91,6 +91,13 @@ cd scripts
 .\start_stack.ps1
 ```
 
+One-command full demo stack (backend + dashboard + profiler):
+
+```powershell
+cd scripts
+.\start_all.bat
+```
+
 Default endpoints:
 
 - Backend API: `http://127.0.0.1:8000`
@@ -168,7 +175,7 @@ Expected output:
 ```powershell
 cd backend
 pip install -r requirements.txt
-python app.py
+python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 ### Dashboard
@@ -192,6 +199,10 @@ python packet_profiler.py --api http://127.0.0.1:8000/predict --window-seconds 3
 - Keep model files under `models/ton_iot/` in sync with backend loading logic.
 - If a notebook fails with JSON escaping issues, convert single backslashes in paths (for example `..\folder`).
 - For reproducibility, run notebooks with fixed seeds and save updated metadata files.
+- Hybrid override tuning (false-positive control):
+  - `IDS_ENABLE_SCAN_OVERRIDE=1` (default)
+  - `IDS_ENABLE_BURST_OVERRIDE=1` (default)
+  - `IDS_ENABLE_SLOW_OVERRIDE=0` (default, recommended for demo stability)
 
 ## License
 

@@ -6,9 +6,9 @@
 const char* ssid = "OnePlus Nord 5";
 const char* password = "onetwoeight";
 
-// Backend base URL (Phase 3 FastAPI)
-// Example: http://192.168.1.100:8000
-const char* backendBaseUrl = "http://10.93.126.49:8000";
+// Backend base URLs (Phase 3 FastAPI). Device will fail over automatically.
+const char* primaryBackendBaseUrl = "http://10.145.0.209:8000";
+const char* secondaryBackendBaseUrl = "http://10.93.126.49:8000";
 
 // Device identity
 const char* deviceId = "esp32-dht11-1";
@@ -22,6 +22,15 @@ DHT dht(DHTPIN, DHTTYPE);
 
 unsigned long lastPublishMs = 0;
 const unsigned long publishIntervalMs = 5000;
+String activeBackend = primaryBackendBaseUrl;
+
+bool isHttpOk(int code) {
+  return code >= 200 && code < 300;
+}
+
+String makeUrl(const String& base, const char* path) {
+  return base + String(path);
+}
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
@@ -37,9 +46,9 @@ void connectWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-bool postSensorData(float temperature, float humidity) {
+bool postSensorDataTo(const String& baseUrl, float temperature, float humidity) {
   HTTPClient http;
-  String sensorUrl = String(backendBaseUrl) + "/sensor";
+  String sensorUrl = makeUrl(baseUrl, "/sensor");
 
   http.begin(sensorUrl);
   http.addHeader("Content-Type", "application/json");
@@ -54,29 +63,49 @@ bool postSensorData(float temperature, float humidity) {
   String response = http.getString();
   http.end();
 
-  Serial.print("POST /sensor code: ");
+  Serial.print("POST /sensor [");
+  Serial.print(baseUrl);
+  Serial.print("] code: ");
   Serial.println(code);
   Serial.print("POST /sensor response: ");
   Serial.println(response);
 
-  return code > 0;
+  return isHttpOk(code);
 }
 
-String getAlertStatus() {
+bool postSensorData(float temperature, float humidity) {
+  if (postSensorDataTo(activeBackend, temperature, humidity)) {
+    return true;
+  }
+
+  String fallback = (activeBackend == primaryBackendBaseUrl) ? String(secondaryBackendBaseUrl) : String(primaryBackendBaseUrl);
+  if (postSensorDataTo(fallback, temperature, humidity)) {
+    activeBackend = fallback;
+    Serial.print("Switched active backend to: ");
+    Serial.println(activeBackend);
+    return true;
+  }
+
+  return false;
+}
+
+String getAlertStatusFrom(const String& baseUrl) {
   HTTPClient http;
-  String alertUrl = String(backendBaseUrl) + "/get-alert";
+  String alertUrl = makeUrl(baseUrl, "/get-alert");
 
   http.begin(alertUrl);
   int code = http.GET();
   String response = http.getString();
   http.end();
 
-  Serial.print("GET /get-alert code: ");
+  Serial.print("GET /get-alert [");
+  Serial.print(baseUrl);
+  Serial.print("] code: ");
   Serial.println(code);
   Serial.print("GET /get-alert response: ");
   Serial.println(response);
 
-  if (code <= 0) {
+  if (!isHttpOk(code)) {
     return "offline";
   }
 
@@ -88,6 +117,22 @@ String getAlertStatus() {
     return "normal";
   }
   return "offline";
+}
+
+String getAlertStatus() {
+  String status = getAlertStatusFrom(activeBackend);
+  if (status != "offline") {
+    return status;
+  }
+
+  String fallback = (activeBackend == primaryBackendBaseUrl) ? String(secondaryBackendBaseUrl) : String(primaryBackendBaseUrl);
+  status = getAlertStatusFrom(fallback);
+  if (status != "offline") {
+    activeBackend = fallback;
+    Serial.print("Switched active backend to: ");
+    Serial.println(activeBackend);
+  }
+  return status;
 }
 
 void applyAlertToBuzzer(const String& status) {
@@ -121,7 +166,7 @@ void loop() {
 
   unsigned long now = millis();
   if (now - lastPublishMs < publishIntervalMs) {
-    delay(5000);
+    delay(100);
     return;
   }
   lastPublishMs = now;

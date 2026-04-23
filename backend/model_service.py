@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -43,9 +44,15 @@ class ModelService:
         self.error_count = 0
         self.total_latency_ms = 0.0
         self.events: deque[dict[str, Any]] = deque(maxlen=2000)
+        self.enable_scan_override = os.getenv("IDS_ENABLE_SCAN_OVERRIDE", "1") == "1"
+        self.enable_burst_override = os.getenv("IDS_ENABLE_BURST_OVERRIDE", "1") == "1"
+        self.enable_slow_override = os.getenv("IDS_ENABLE_SLOW_OVERRIDE", "0") == "1"
         self._profiler_rate_ema = 0.0
         self._profiler_packets_ema = 0.0
         self._profiler_bytes_ema = 0.0
+        self._profiler_windows_seen = 0
+        self._scan_windows = 0
+        self._burst_windows = 0
         self._slow_abuse_windows = 0
 
     @staticmethod
@@ -80,47 +87,58 @@ class ModelService:
         prev_rate_ema = self._profiler_rate_ema
         prev_packets_ema = self._profiler_packets_ema
         prev_bytes_ema = self._profiler_bytes_ema
+        self._profiler_windows_seen += 1
 
         self._profiler_rate_ema = packet_rate if prev_rate_ema == 0 else (1 - alpha) * prev_rate_ema + alpha * packet_rate
         self._profiler_packets_ema = total_packets if prev_packets_ema == 0 else (1 - alpha) * prev_packets_ema + alpha * total_packets
         self._profiler_bytes_ema = total_bytes if prev_bytes_ema == 0 else (1 - alpha) * prev_bytes_ema + alpha * total_bytes
 
         # Hybrid trigger: classify realistic simulation profiles.
-        scan_like = unique_dst_ports >= 8 and syn_packets >= 10 and packet_rate >= 15.0
+        # Use stricter thresholds and sustained windows to avoid false positives on benign bursts.
+        scan_like_now = unique_dst_ports >= 15 and syn_packets >= 25 and packet_rate >= 30.0
+        self._scan_windows = self._scan_windows + 1 if scan_like_now else max(0, self._scan_windows - 1)
+        scan_like = self._scan_windows >= 2
 
-        absolute_burst = packet_rate >= 120.0 or total_packets >= 350.0 or total_bytes >= 400000.0
-        relative_spike = (
+        absolute_burst_now = packet_rate >= 140.0 or total_packets >= 380.0 or total_bytes >= 450000.0
+        relative_spike_now = (
             prev_rate_ema > 0
-            and packet_rate > (prev_rate_ema * 2.4)
-            and total_packets > max(120.0, prev_packets_ema * 1.8)
+            and packet_rate > (prev_rate_ema * 2.6)
+            and total_packets > max(150.0, prev_packets_ema * 1.8)
         )
+        burst_like_now = absolute_burst_now or relative_spike_now
+        self._burst_windows = self._burst_windows + 1 if burst_like_now else max(0, self._burst_windows - 1)
+        burst_like = self._burst_windows >= 2
 
         # Slow abuse: sustained moderate abnormal load over several windows.
         slow_window = (
-            packet_rate >= 28.0
-            and packet_rate < 120.0
-            and unique_dst_ports <= 5
-            and total_packets >= 90.0
+            packet_rate >= 40.0
+            and packet_rate < 160.0
+            and unique_dst_ports <= 4
+            and total_packets >= 140.0
         )
         self._slow_abuse_windows = self._slow_abuse_windows + 1 if slow_window else 0
-        slow_abuse = self._slow_abuse_windows >= 3
+        slow_abuse = self._slow_abuse_windows >= 5
 
         if label.lower() in {"normal", "benign", "benigntraffic"}:
-            if scan_like:
+            # Warm up baseline for a few windows before allowing overrides.
+            if self._profiler_windows_seen < 6:
+                return label, confidence, detection_mode, anomaly_reason, packet_rate, total_packets, total_bytes, unique_dst_ports
+
+            if self.enable_scan_override and scan_like:
                 label = "scanning"
                 confidence = max(0.9, confidence or 0.0)
                 detection_mode = "hybrid"
-                anomaly_reason = "high-unique-dst-ports-syn-scan"
-            elif absolute_burst or relative_spike:
+                anomaly_reason = "sustained-high-unique-dst-ports-syn-scan"
+            elif self.enable_burst_override and burst_like:
                 label = "dos"
                 confidence = max(0.92, confidence or 0.0)
                 detection_mode = "hybrid"
-                anomaly_reason = "burst-rate-threshold" if absolute_burst else "rate-spike-vs-baseline"
-            elif slow_abuse:
+                anomaly_reason = "sustained-burst-rate-threshold" if absolute_burst_now else "sustained-rate-spike-vs-baseline"
+            elif self.enable_slow_override and slow_abuse:
                 label = "password"
                 confidence = max(0.86, confidence or 0.0)
                 detection_mode = "hybrid"
-                anomaly_reason = "sustained-moderate-abuse-pattern"
+                anomaly_reason = "sustained-slow-abuse-pattern"
 
         return label, confidence, detection_mode, anomaly_reason, packet_rate, total_packets, total_bytes, unique_dst_ports
 
